@@ -224,19 +224,11 @@ const storage = multer.diskStorage({
         cb(null, getDestDir(file.mimetype));
     },
     filename: function(req, file, cb) {
-        const timestamp = Date.now();
-        const ext = path.extname(file.originalname);
-        let name = path.basename(file.originalname, ext);
-        if (req.body.anonymize === 'true') {
-            const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-            name = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-            cb(null, `${name}${ext}`);
-        } else {
-            name = name.replace(/\s+/g, '_')
-                       .replace(/[^\w\-_.]/g, '_')
-                       .replace(/_+/g, '_');
-            cb(null, `${name}_${timestamp}${ext}`);
-        }
+        // Don't decide final name here — req.body isn't reliably populated yet
+        // because multer processes multipart fields in stream order, and
+        // 'file' is typically appended before anonymize/removeTimestamp.
+        const tempName = `tmp_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname)}`;
+        cb(null, tempName);
     }
 });
 
@@ -1030,31 +1022,44 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // Handle removeTimestamp for tier 2
-    if ((req.body.removeTimestamp === 'true' || req.body.removeTimestamp === true) && auth.tier === 2) {
-        const oldPath = req.file.path;
-        const filename = req.file.filename;
+    // ─── Rename to final filename now that req.body is fully populated ───
+    const timestamp = Date.now();
+    const ext = path.extname(req.file.originalname);
+    let baseName = path.basename(req.file.originalname, ext);
+    const isAnonymized = req.body.anonymize === 'true' || req.body.anonymize === true;
 
-        const timestampMatch = filename.match(/^(.+)_(\d{13})(\.\w+)$/);
-        if (timestampMatch) {
-            const [, baseName, , ext] = timestampMatch;
-            const newFilename = `${baseName}${ext}`;
-            const newPath = path.join(path.dirname(oldPath), newFilename);
-
-            if (fs.existsSync(newPath)) fs.unlinkSync(newPath);
-            fs.renameSync(oldPath, newPath);
-            req.file.filename = newFilename;
-            req.file.path = newPath;
-
-            console.log(`✂️ Removed timestamp: ${filename} → ${newFilename}`);
-        }
+    let finalFilename;
+    if (isAnonymized) {
+        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        const randomName = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+        finalFilename = `${randomName}${ext}`;
+    } else {
+        baseName = baseName.replace(/\s+/g, '_')
+                            .replace(/[^\w\-_.]/g, '_')
+                            .replace(/_+/g, '_');
+        const wantsNoTimestamp = (req.body.removeTimestamp === 'true' || req.body.removeTimestamp === true) && auth.tier === 2;
+        finalFilename = wantsNoTimestamp ? `${baseName}${ext}` : `${baseName}_${timestamp}${ext}`;
     }
+
+    const destDir = path.dirname(req.file.path);
+    let finalPath = path.join(destDir, finalFilename);
+
+    // Avoid clobbering an existing file with the same final name
+    if (fs.existsSync(finalPath)) {
+        finalFilename = `${path.basename(finalFilename, ext)}_${crypto.randomBytes(3).toString('hex')}${ext}`;
+        finalPath = path.join(destDir, finalFilename);
+    }
+
+    fs.renameSync(req.file.path, finalPath);
+    req.file.filename = finalFilename;
+    req.file.path = finalPath;
+
+    // ─── (delete the old "Handle removeTimestamp for tier 2" block entirely — now handled above) ───
 
     const type = req.file.mimetype.split('/')[0];
     const mimetype = req.file.mimetype;
     const filename = req.file.filename;
     const originalName = req.file.originalname;
-    const destDir = path.dirname(req.file.path);
     const category = getDirCategory(destDir);
 
     const linkPath = `/files/${category}/${filename}`;
@@ -1062,11 +1067,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const styledLink = `[${originalName} - TomasekValla Filestream System](${link})`;
     const fileType = getFileType(mimetype);
 
-    // Expiration
     const expDays = Math.max(1, Math.min(14, parseInt(req.body.expirationDays) || 7));
     const expiresAt = Date.now() + (expDays * 24 * 60 * 60 * 1000);
 
-    // Register in file registry
     const fileId = generateFileId();
     const fileStats = fs.statSync(req.file.path);
 
@@ -1084,12 +1087,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         batchId: req.body.batchId || null
     });
 
-    // If part of a batch, add fileId to batch entry
     if (req.body.batchId) {
         const batchEntry = registry.batches.find(b => b.id === req.body.batchId);
-        if (batchEntry) {
-            batchEntry.files.push(fileId);
-        }
+        if (batchEntry) batchEntry.files.push(fileId);
     }
 
     saveRegistry();
