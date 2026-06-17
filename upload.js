@@ -28,22 +28,63 @@ function getPasswordTier(password) {
     return 0;
 }
 
+// ─── Session Store ───────────────────────────────────────────────────────────
+//
+// Sessions are random 32-byte hex tokens mapped to { tier, expiresAt }.
+// The cookie contains ONLY the random token — never a password hash.
+// This means:
+//   • Stolen cookie cannot be used to derive or verify the password.
+//   • Sessions can be invalidated server-side (logout, expiry).
+//   • No credential material ever touches logs or network after /api/auth.
+
+const sessions = new Map(); // token → { tier, expiresAt }
+
+// Clean expired sessions every 10 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [token, session] of sessions) {
+        if (now > session.expiresAt) sessions.delete(token);
+    }
+}, 10 * 60 * 1000);
+
+function createSession(tier, durationMs) {
+    const token = crypto.randomBytes(32).toString('hex');
+    sessions.set(token, { tier, expiresAt: Date.now() + durationMs });
+    return token;
+}
+
+function getSession(token) {
+    if (!token) return null;
+    const session = sessions.get(token);
+    if (!session) return null;
+    if (Date.now() > session.expiresAt) {
+        sessions.delete(token);
+        return null;
+    }
+    return session;
+}
+
+function deleteSession(token) {
+    sessions.delete(token);
+}
+
 // ─── Cookie Auth Helper ──────────────────────────────────────────────────────
 
 function authenticateRequest(req) {
+    // 1. Try session cookie (preferred — no credential in request body)
     const token = req.cookies && req.cookies.tvfs_token;
-    console.log('COOKIES:', req.cookies);
-    console.log('TOKEN:', token);
-    console.log('TIER2 MATCH:', passwordTiers.tier2.includes(token));
     if (token) {
-        if (passwordTiers.tier2.includes(token)) return { valid: true, tier: 2 };
-        if (passwordTiers.tier1.includes(token)) return { valid: true, tier: 1 };
+        const session = getSession(token);
+        if (session) return { valid: true, tier: session.tier };
     }
+
+    // 2. Fall back to password in body (for requests that don't yet have a cookie)
     const password = req.body && req.body.password;
     if (password) {
         const tier = getPasswordTier(password);
         if (tier > 0) return { valid: true, tier };
     }
+
     return { valid: false, tier: 0 };
 }
 
@@ -99,8 +140,12 @@ Object.values(dirs).forEach(dir => {
 });
 
 // ─── File Registry ───────────────────────────────────────────────────────────
+//
+// Atomic write: data goes to a temp file first, then renamed into place.
+// This prevents corruption if the process crashes mid-write.
 
 const REGISTRY_PATH = path.join(__dirname, '../files_web/file_registry.json');
+const REGISTRY_TMP  = REGISTRY_PATH + '.tmp';
 
 let registry = { files: [], batches: [] };
 let registrySaveTimer = null;
@@ -117,24 +162,23 @@ function loadRegistry() {
     }
 }
 
+function _writeRegistryAtomic() {
+    try {
+        fs.writeFileSync(REGISTRY_TMP, JSON.stringify(registry, null, 2));
+        fs.renameSync(REGISTRY_TMP, REGISTRY_PATH);
+    } catch (err) {
+        console.error('❌ Failed to save registry:', err.message);
+    }
+}
+
 function saveRegistry() {
     clearTimeout(registrySaveTimer);
-    registrySaveTimer = setTimeout(() => {
-        try {
-            fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
-        } catch (err) {
-            console.error('❌ Failed to save registry:', err.message);
-        }
-    }, 2000);
+    registrySaveTimer = setTimeout(_writeRegistryAtomic, 2000);
 }
 
 function saveRegistrySync() {
     clearTimeout(registrySaveTimer);
-    try {
-        fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
-    } catch (err) {
-        console.error('❌ Failed to save registry (sync):', err.message);
-    }
+    _writeRegistryAtomic();
 }
 
 // Load registry on startup
@@ -162,7 +206,9 @@ async function withManifestLock(uploadId, fn) {
 
 function writeManifest(uploadId, data) {
     const manifestPath = path.join(dirs.chunks, `${uploadId}_manifest.json`);
-    fs.writeFileSync(manifestPath, JSON.stringify(data, null, 2));
+    const tmpPath = manifestPath + '.tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+    fs.renameSync(tmpPath, manifestPath);
 }
 
 function readManifest(uploadId) {
@@ -170,6 +216,10 @@ function readManifest(uploadId) {
     if (!fs.existsSync(manifestPath)) return null;
     return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 }
+
+// ─── Assembly Guard — prevents double-assembly race ──────────────────────────
+
+const assemblyInProgress = new Set();
 
 // ─── Browser-Friendly Types ─────────────────────────────────────────────────
 
@@ -255,9 +305,16 @@ const chunkUpload = multer({
     fileFilter: (req, file, cb) => cb(null, true)
 });
 
-// ─── Used Space ──────────────────────────────────────────────────────────────
+// ─── Used Space (cached — avoids blocking the event loop on every status poll) ─
+
+let _usedSpaceCache = { bytes: 0, updatedAt: 0 };
+const SPACE_CACHE_TTL = 30 * 1000; // 30 seconds
 
 function getUsedSpace() {
+    const now = Date.now();
+    if (now - _usedSpaceCache.updatedAt < SPACE_CACHE_TTL) {
+        return _usedSpaceCache.bytes;
+    }
     let total = 0;
     Object.values(dirs).forEach(dir => {
         if (!fs.existsSync(dir)) return;
@@ -268,6 +325,7 @@ function getUsedSpace() {
             } catch (e) {}
         });
     });
+    _usedSpaceCache = { bytes: total, updatedAt: now };
     return total;
 }
 
@@ -300,13 +358,35 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// ─── HTML escape helper (for server-side rendered landing pages) ──────────────
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
+}
+
+// Safely embed a value as a JS string literal inside a <script> block.
+// JSON.stringify produces valid JS string/array/object literals and
+// escapes </script> sequences via unicode escape so they can't break out.
+function safeScriptJson(value) {
+    return JSON.stringify(value).replace(/<\//g, '<\\/');
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ROUTES
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── GET /api/status ─────────────────────────────────────────────────────────
+// Requires authentication — exposes internal storage info.
 
 router.get('/status', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) return res.status(403).json({ error: 'Unauthorized' });
+
     const usedBytes = getUsedSpace();
     const usedGB = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
     res.json({
@@ -332,6 +412,8 @@ router.post('/verify-password', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, k
 });
 
 // ─── POST /api/auth ──────────────────────────────────────────────────────────
+// Verifies password and issues a random session token stored in an httpOnly cookie.
+// The password hash is NEVER stored in a cookie — only the opaque session token.
 
 router.post('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: 'auth:' }), (req, res) => {
     const { password, cookieDays } = req.body;
@@ -346,26 +428,41 @@ router.post('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: '
     }
 
     const days = Math.max(1, Math.min(30, parseInt(cookieDays) || 7));
-    const maxAge = days * 24 * 60 * 60 * 1000;
-    const hashedPassword = sha256(password);
+    const maxAgeMs = days * 24 * 60 * 60 * 1000;
 
-    res.cookie('tvfs_token', hashedPassword, {
+    // Create a random session token — no credential material in cookies
+    const sessionToken = createSession(tier, maxAgeMs);
+
+    res.cookie('tvfs_token', sessionToken, {
         httpOnly: true,
         path: '/',
-        maxAge: maxAge,
+        maxAge: maxAgeMs,
         sameSite: 'none',
         secure: true
     });
 
+    // tvfs_tier is readable by JS (not httpOnly) so the frontend can show the tier label.
+    // It contains only the tier number (1 or 2), not any credential.
     res.cookie('tvfs_tier', String(tier), {
         httpOnly: false,
         path: '/',
-        maxAge: maxAge,
+        maxAge: maxAgeMs,
         sameSite: 'none',
         secure: true
     });
 
     res.json({ valid: true, tier });
+});
+
+// ─── POST /api/logout ────────────────────────────────────────────────────────
+
+router.post('/logout', (req, res) => {
+    const token = req.cookies && req.cookies.tvfs_token;
+    if (token) deleteSession(token);
+
+    res.clearCookie('tvfs_token', { path: '/', sameSite: 'none', secure: true });
+    res.clearCookie('tvfs_tier',  { path: '/', sameSite: 'none', secure: true });
+    res.json({ ok: true });
 });
 
 // ─── GET /api/upload/status/:uploadId ────────────────────────────────────────
@@ -459,7 +556,7 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
     const index = parseInt(chunkIndex);
 
     if (isNaN(index)) {
-        console.error(`❌ [CHUNK ERROR] chunkIndex is NaN — req.body:`, req.body);
+        console.error(`❌ [CHUNK ERROR] chunkIndex is NaN — uploadId: ${uploadId}`);
         if (fs.existsSync(req.file.path)) try { fs.unlinkSync(req.file.path); } catch (e) {}
         return res.status(400).json({ error: 'Missing or invalid chunkIndex', received: chunkIndex });
     }
@@ -556,6 +653,13 @@ router.post('/upload/complete', async (req, res) => {
         });
     }
 
+    // ── Assembly guard: reject duplicate concurrent complete requests ──────
+    if (assemblyInProgress.has(uploadId)) {
+        return res.status(409).json({ error: 'Assembly already in progress for this upload' });
+    }
+    assemblyInProgress.add(uploadId);
+
+    // Release mutex — all chunks are in, no more chunk writes expected
     manifestMutexes.delete(uploadId);
 
     console.log(`🔗 [ASSEMBLING] ${manifest.filename} from ${manifest.totalChunks} chunks`);
@@ -706,6 +810,8 @@ router.post('/upload/complete', async (req, res) => {
         } catch (e) {}
 
         res.status(500).json({ error: 'Upload assembly failed', details: error.message });
+    } finally {
+        assemblyInProgress.delete(uploadId);
     }
 });
 
@@ -764,14 +870,14 @@ router.post('/upload/batch/complete', async (req, res) => {
         return res.status(400).json({ error: 'No files in batch' });
     }
 
-    // Build file rows and data for the landing page
+    // Build file rows for landing page using proper HTML escaping
     const fileRows = batchFiles.map((f, idx) => {
         const url = `https://files.tomasekvalla.cz/files/${f.directory}/${f.storedName}`;
         const size = formatBytes(f.size);
-        const escapedName = f.originalName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const safeName = escapeHtml(f.originalName);
         return `        <div class="file-row">
-            <a href="${url}" target="_blank" class="file-name" title="${escapedName}">${escapedName}</a>
-            <span class="file-size">${size}</span>
+            <a href="${escapeHtml(url)}" target="_blank" class="file-name" title="${safeName}">${safeName}</a>
+            <span class="file-size">${escapeHtml(size)}</span>
             <button class="file-copy" data-idx="${idx}" data-kind="link" title="Copy link">📄</button>
             <button class="file-copy" data-idx="${idx}" data-kind="styled" title="Copy styled">✨</button>
         </div>`;
@@ -779,14 +885,16 @@ router.post('/upload/batch/complete', async (req, res) => {
 
     const totalSize = formatBytes(batchFiles.reduce((sum, f) => sum + f.size, 0));
     const expiryDate = new Date(batchEntry.expiresAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-    const filesJson = JSON.stringify(batchFiles.map(f => {
+
+    // Build files array for JS — use safeScriptJson to prevent </script> injection
+    const filesData = batchFiles.map(f => {
         const url = `https://files.tomasekvalla.cz/files/${f.directory}/${f.storedName}`;
         return {
             url,
             name: f.originalName,
             styled: `[${f.originalName} - TomasekValla Filestream System](${url})`
         };
-    }));
+    });
 
     const landingPageUrl = `https://files.tomasekvalla.cz/files/batch/${batchId}.html`;
     const batchStyledLink = `[${batchFiles.length} Files (${totalSize}) - TomasekValla Filestream System](${landingPageUrl})`;
@@ -824,7 +932,7 @@ router.post('/upload/batch/complete', async (req, res) => {
 <body>
 <div class="container">
     <h1><span>TomasekValla</span> Shared Files</h1>
-    <p class="subtitle">${batchFiles.length} files \u2022 ${totalSize}</p>
+    <p class="subtitle">${escapeHtml(String(batchFiles.length))} files \u2022 ${escapeHtml(totalSize)}</p>
     <div class="actions">
         <button class="btn btn-secondary" id="copyPageLink">📄 Copy Link</button>
         <button class="btn btn-secondary" id="copyPageStyled">✨ Copy Styled</button>
@@ -836,12 +944,13 @@ ${fileRows}
         <button class="btn btn-primary" onclick="downloadAll()">\u2B07\uFE0F Download All</button>
         <button class="btn btn-secondary" onclick="requestZip(this)">📦 Download ZIP</button>
     </div>
-    <p class="expire-note">These files expire on ${expiryDate}</p>
+    <p class="expire-note">These files expire on ${escapeHtml(expiryDate)}</p>
 </div>
 <script>
-const files = ${filesJson};
-const pageLink = ${JSON.stringify(landingPageUrl)};
-const pageStyled = ${JSON.stringify(batchStyledLink)};
+const files = ${safeScriptJson(filesData)};
+const pageLink = ${safeScriptJson(landingPageUrl)};
+const pageStyled = ${safeScriptJson(batchStyledLink)};
+const batchId = ${safeScriptJson(batchId)};
 
 function truncateFilename(name, maxLen) {
     maxLen = maxLen || 32;
@@ -856,7 +965,7 @@ function truncateFilename(name, maxLen) {
 function copyText(btn, text) {
     navigator.clipboard.writeText(text).then(() => {
         const orig = btn.textContent;
-        btn.textContent = '✅';
+        btn.textContent = '\u2705';
         setTimeout(() => { btn.textContent = orig; }, 1200);
     });
 }
@@ -890,17 +999,18 @@ function downloadAll() {
         }, i * 800);
     });
 }
+
 function requestZip(btn) {
-    btn.textContent = '⏳ Creating ZIP...';
+    btn.textContent = '\u23F3 Creating ZIP...';
     btn.disabled = true;
-    fetch('/api/batch/${batchId}/zip', { method: 'POST' })
+    fetch('/api/batch/' + batchId + '/zip', { method: 'POST' })
         .then(r => r.json())
         .then(d => {
-            if (d.link) { window.location.href = d.link; btn.textContent = '✅ ZIP Ready'; }
-            else { btn.textContent = '❌ Failed'; }
-            setTimeout(() => { btn.textContent = '📦 Download ZIP'; btn.disabled = false; }, 3000);
+            if (d.link) { window.location.href = d.link; btn.textContent = '\u2705 ZIP Ready'; }
+            else { btn.textContent = '\u274C Failed'; }
+            setTimeout(() => { btn.textContent = '\uD83D\uDCE6 Download ZIP'; btn.disabled = false; }, 3000);
         })
-        .catch(() => { btn.textContent = '❌ Failed'; setTimeout(() => { btn.textContent = '📦 Download ZIP'; btn.disabled = false; }, 3000); });
+        .catch(() => { btn.textContent = '\u274C Failed'; setTimeout(() => { btn.textContent = '\uD83D\uDCE6 Download ZIP'; btn.disabled = false; }, 3000); });
 }
 </script>
 </body>
@@ -1053,8 +1163,6 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     fs.renameSync(req.file.path, finalPath);
     req.file.filename = finalFilename;
     req.file.path = finalPath;
-
-    // ─── (delete the old "Handle removeTimestamp for tier 2" block entirely — now handled above) ───
 
     const type = req.file.mimetype.split('/')[0];
     const mimetype = req.file.mimetype;
