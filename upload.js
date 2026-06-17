@@ -834,7 +834,7 @@ ${fileRows}
     </div>
     <div class="actions">
         <button class="btn btn-primary" onclick="downloadAll()">\u2B07\uFE0F Download All</button>
-        <button class="btn btn-secondary" onclick="requestZip(this)">📦 Request ZIP</button>
+        <button class="btn btn-secondary" onclick="requestZip(this)">📦 Download ZIP</button>
     </div>
     <p class="expire-note">These files expire on ${expiryDate}</p>
 </div>
@@ -898,9 +898,9 @@ function requestZip(btn) {
         .then(d => {
             if (d.link) { window.location.href = d.link; btn.textContent = '✅ ZIP Ready'; }
             else { btn.textContent = '❌ Failed'; }
-            setTimeout(() => { btn.textContent = '📦 Request ZIP'; btn.disabled = false; }, 3000);
+            setTimeout(() => { btn.textContent = '📦 Download ZIP'; btn.disabled = false; }, 3000);
         })
-        .catch(() => { btn.textContent = '❌ Failed'; setTimeout(() => { btn.textContent = '📦 Request ZIP'; btn.disabled = false; }, 3000); });
+        .catch(() => { btn.textContent = '❌ Failed'; setTimeout(() => { btn.textContent = '📦 Download ZIP'; btn.disabled = false; }, 3000); });
 }
 </script>
 </body>
