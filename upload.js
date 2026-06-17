@@ -4,7 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
-const archiver = require('archiver');
+let archiver = require('archiver');
+if (archiver.default) {
+    archiver = archiver.default;
+}
 const router = express.Router();
 
 // ─── Password System (SHA-256) ───────────────────────────────────────────────
@@ -13,9 +16,6 @@ function sha256(str) {
     return crypto.createHash('sha256').update(str).digest('hex');
 }
 
-// Pre-computed SHA-256 hashes of passwords:
-// 'boobies69' -> 1faba86f032c7858f26eb9347f5355abdacb49089a80ce8d9b39ee6a21620e07 (tier 2)
-// 'astx67'    -> 046123066f962b139f6977e8c903c8e8bc85a0f4ea6070e2d2e429ee98e683f3 (tier 1)
 const passwordTiers = {
     tier1: process.env.TIER1_HASHES ? process.env.TIER1_HASHES.split(',') : [],
     tier2: process.env.TIER2_HASHES ? process.env.TIER2_HASHES.split(',') : []
@@ -259,7 +259,7 @@ const chunkStorage = multer.diskStorage({
 
 const chunkUpload = multer({
     storage: chunkStorage,
-    limits: { fileSize: 35 * 1024 * 1024 },  // bylo 30MB, dáme 35MB kvůli overhead
+    limits: { fileSize: 35 * 1024 * 1024 },
     fileFilter: (req, file, cb) => cb(null, true)
 });
 
@@ -327,7 +327,7 @@ router.get('/status', (req, res) => {
 
 // ─── POST /api/verify-password ───────────────────────────────────────────────
 
-router.post('/verify-password', rateLimit(1), (req, res) => {
+router.post('/verify-password', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: 'auth:' }), (req, res) => {
     const password = req.body.password;
     if (!password) {
         return res.status(400).json({ valid: false, tier: 0 });
@@ -341,7 +341,7 @@ router.post('/verify-password', rateLimit(1), (req, res) => {
 
 // ─── POST /api/auth ──────────────────────────────────────────────────────────
 
-router.post('/auth', rateLimit(1), (req, res) => {
+router.post('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: 'auth:' }), (req, res) => {
     const { password, cookieDays } = req.body;
 
     if (!password) {
@@ -376,9 +376,39 @@ router.post('/auth', rateLimit(1), (req, res) => {
     res.json({ valid: true, tier });
 });
 
+// ─── GET /api/upload/status/:uploadId ────────────────────────────────────────
+// Used by frontend to check if a previous chunked upload is still resumable
+
+router.get('/upload/status/:uploadId', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) return res.status(403).json({ error: 'Invalid password' });
+
+    const { uploadId } = req.params;
+    const manifest = readManifest(uploadId);
+
+    if (!manifest) {
+        return res.json({ active: false });
+    }
+
+    // Consider uploads stale after 24h
+    const age = Date.now() - (manifest.createdAt || 0);
+    if (age > 24 * 60 * 60 * 1000 || manifest.status === 'completed') {
+        return res.json({ active: false });
+    }
+
+    res.json({
+        active: true,
+        uploadId: manifest.uploadId,
+        receivedChunks: manifest.receivedChunks || [],
+        totalChunks: manifest.totalChunks,
+        filename: manifest.filename,
+        fileSize: manifest.fileSize
+    });
+});
+
 // ─── POST /api/upload/init ───────────────────────────────────────────────────
 
-router.post('/upload/init', rateLimit(1), (req, res) => {
+router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix: 'init:' }), (req, res) => {
     const { filename, fileSize, mimeType, totalChunks, uploadMode, expirationDays, batchId } = req.body;
 
     const auth = authenticateRequest(req);
@@ -422,7 +452,7 @@ router.post('/upload/init', rateLimit(1), (req, res) => {
 
 // ─── POST /api/upload/chunk ──────────────────────────────────────────────────
 
-router.post('/upload/chunk', rateLimit(20), chunkUpload.single('chunk'), async (req, res) => {
+router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefix: 'chunk:' }), chunkUpload.single('chunk'), async (req, res) => {
     const { uploadId, chunkIndex } = req.body;
 
     if (!uploadId) {
@@ -689,7 +719,7 @@ router.post('/upload/complete', async (req, res) => {
 
 // ─── POST /api/upload/batch/init ─────────────────────────────────────────────
 
-router.post('/upload/batch/init', rateLimit(1), (req, res) => {
+router.post('/upload/batch/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix: 'batchinit:' }), (req, res) => {
     const auth = authenticateRequest(req);
     if (!auth.valid) {
         return res.status(403).json({ error: 'Invalid password' });
