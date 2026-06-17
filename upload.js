@@ -437,7 +437,7 @@ router.post('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: '
         httpOnly: true,
         path: '/',
         maxAge: maxAgeMs,
-        sameSite: 'none',
+        sameSite: 'lax',
         secure: true
     });
 
@@ -447,7 +447,7 @@ router.post('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: '
         httpOnly: false,
         path: '/',
         maxAge: maxAgeMs,
-        sameSite: 'none',
+        sameSite: 'lax',
         secure: true
     });
 
