@@ -132,6 +132,7 @@ const dirs = {
     audio: path.join(baseDir, 'audio'),
     download: path.join(baseDir, 'download'),
     batch: path.join(baseDir, 'batch'),
+    text: path.join(baseDir, 'text'),
     chunks: path.join(__dirname, 'temp_chunks')
 };
 
@@ -248,6 +249,7 @@ function getDirCategory(destDir) {
     if (destDir === dirs.videos) return 'videos';
     if (destDir === dirs.audio) return 'audio';
     if (destDir === dirs.batch) return 'batch';
+    if (destDir === dirs.text) return 'text';
     return 'download';
 }
 
@@ -267,7 +269,134 @@ function generateBatchId() {
     return `batch_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
-// ─── Multer Setup ────────────────────────────────────────────────────────────
+function generateReaderId() {
+    return crypto.randomBytes(6).toString('hex');
+}
+
+function generateTextReaderHtml(txtUrl, originalName) {
+    return `<!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#111111">
+    <title>${escapeHtml(originalName)} — TVFS Text Reader</title>
+    <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root { --bg:#111; --fg:#e8e8e8; --accent:#2fffc4; --fs:1rem; }
+    html, body { max-width: 100%; overflow-x: hidden; }
+    body { background:var(--bg); color:var(--fg); margin:0; padding:0; font-family:'Georgia','Times New Roman',serif; transition:background .2s,color .2s; min-height:100vh; display:flex; flex-direction:column; }
+    .toolbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:10px; padding:12px 20px; background:rgba(17,17,17,.92); backdrop-filter:blur(12px); border-bottom:1px solid rgba(255,255,255,.08); flex-wrap:wrap; }
+    .tb-title { flex:1; min-width:0; font-size:.8rem; font-weight:700; color:var(--accent); letter-spacing:.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:monospace; }
+    .tb-btn { background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); color:var(--fg); font-size:.72rem; font-weight:700; padding:6px 13px; border-radius:8px; cursor:pointer; white-space:nowrap; transition:all .15s; }
+    .tb-btn:hover { background:rgba(47,255,196,.12); border-color:var(--accent); color:var(--accent); }
+    .content { flex:1; padding:40px 20px; max-width:820px; margin:0 auto; width:100%; }
+    pre { font-family:'Georgia','Times New Roman',serif; font-size:var(--fs); line-height:1.8; white-space:pre-wrap; word-break:break-word; margin:0; color:var(--fg); }
+    .loading { text-align:center; padding:80px 20px; color:rgba(255,255,255,.3); font-size:.9rem; }
+    .error { text-align:center; padding:80px 20px; color:#ff6b6b; font-size:.9rem; }
+    body.light { --bg:#fafafa; --fg:#1a1a1a; }
+    body.light .toolbar { background:rgba(250,250,250,.92); border-bottom:1px solid rgba(0,0,0,.1); }
+    body.light .tb-btn { background:rgba(0,0,0,.05); border-color:rgba(0,0,0,.12); color:var(--fg); }
+    body.light .tb-btn:hover { background:rgba(0,168,134,.1); border-color:#00a886; color:#00a886; }
+    @media (max-width: 600px) {
+        .toolbar { padding:10px 14px; gap:8px; }
+        .tb-title { font-size:.72rem; }
+        .tb-btn { padding:6px 10px; font-size:.68rem; }
+        .content { padding:24px 16px; }
+        .loading, .error { padding:60px 16px; }
+    }
+    </style>
+    </head>
+    <body>
+    <div class="toolbar">
+    <span class="tb-title">${escapeHtml(originalName)}</span>
+    <button class="tb-btn" id="themeBtn" onclick="toggleTheme()">☀️ Light</button>
+    <button class="tb-btn" id="sizeBtn" onclick="cycleSize()">Aa</button>
+    <a class="tb-btn" href="${escapeHtml(txtUrl)}" download="${escapeHtml(originalName)}">⬇ Download .txt</a>
+    </div>
+    <div class="content"><pre id="textContent" class="loading">Loading…</pre></div>
+    <script>
+    var SIZES = ['0.85rem','1rem','1.15rem','1.35rem','1.6rem'];
+    var sizeIdx = parseInt(localStorage.getItem('tvfs_reader_size')||'1');
+    var theme = localStorage.getItem('tvfs_reader_theme')||'dark';
+
+    function applyTheme() {
+        document.body.classList.toggle('light', theme==='light');
+        document.getElementById('themeBtn').textContent = theme==='light'?'🌙 Dark':'☀️ Light';
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', theme==='light'?'#fafafa':'#111111');
+    }
+    function toggleTheme() {
+        theme = theme==='light'?'dark':'light';
+        localStorage.setItem('tvfs_reader_theme', theme);
+        applyTheme();
+    }
+    function applySize() {
+        document.documentElement.style.setProperty('--fs', SIZES[sizeIdx]);
+        document.getElementById('sizeBtn').textContent = 'Aa ('+SIZES[sizeIdx]+')';
+    }
+    function cycleSize() {
+        sizeIdx = (sizeIdx+1)%SIZES.length;
+        localStorage.setItem('tvfs_reader_size', sizeIdx);
+        applySize();
+    }
+
+    applyTheme(); applySize();
+
+    fetch(${safeScriptJson(txtUrl)})
+    .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
+    .then(function(t){
+        var el = document.getElementById('textContent');
+        el.className='';
+        el.textContent=t;
+    })
+    .catch(function(e){
+        var el = document.getElementById('textContent');
+        el.className='error';
+        el.textContent='Failed to load text: '+e.message;
+    });
+    </script>
+    </body>
+    </html>`;
+}
+
+function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt) {
+    // Generate a reader page for .txt files (or text/plain)
+    const isTxt = mimeType === 'text/plain' || storedFilename.toLowerCase().endsWith('.txt');
+    if (!isTxt) return null;
+
+    const readerId = generateReaderId();
+    const readerFilename = `${readerId}.html`;
+    const readerPath = path.join(dirs.text, readerFilename);
+    const txtUrl = `https://files.tomasekvalla.cz/files/download/${storedFilename}`;
+    const readerUrl = `https://files.tomasekvalla.cz/files/text/${readerFilename}`;
+
+    try {
+        const html = generateTextReaderHtml(txtUrl, originalName);
+        fs.writeFileSync(readerPath, html);
+        console.log(`📖 [TEXT READER] Created ${readerFilename} for ${storedFilename}`);
+
+        // Register reader in registry with same expiry
+        const readFileId = generateFileId();
+        registry.files.push({
+            id: readFileId,
+            originalName: readerFilename,
+            storedName: readerFilename,
+            path: readerPath,
+            directory: 'text',
+            size: Buffer.byteLength(html),
+                            mimeType: 'text/html',
+                            category: 'file',
+                            uploadedAt: Date.now(),
+                            expiresAt: expiresAt,
+                            isTextReader: true
+        });
+
+        return readerUrl;
+    } catch (e) {
+        console.error('❌ [TEXT READER] Failed to create reader:', e.message);
+        return null;
+    }
+}
 
 const storage = multer.diskStorage({
     destination: function(req, file, cb) {
@@ -362,11 +491,11 @@ function formatBytes(bytes) {
 
 function escapeHtml(str) {
     return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#x27;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
 }
 
 // Safely embed a value as a JS string literal inside a <script> block.
@@ -518,14 +647,14 @@ router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix:
         uploadId,
         filename,
         fileSize: parseInt(fileSize) || 0,
-        mimeType,
-        totalChunks: parseInt(totalChunks),
-        uploadMode: uploadMode || 'fast',
-        receivedChunks: [],
-        createdAt: Date.now(),
-        status: 'initialized',
-        expirationDays: expDays,
-        batchId: batchId || null
+            mimeType,
+            totalChunks: parseInt(totalChunks),
+            uploadMode: uploadMode || 'fast',
+            receivedChunks: [],
+            createdAt: Date.now(),
+            status: 'initialized',
+            expirationDays: expDays,
+            batchId: batchId || null
     };
 
     writeManifest(uploadId, manifest);
@@ -678,8 +807,8 @@ router.post('/upload/complete', async (req, res) => {
             name = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
         } else {
             name = name.replace(/\s+/g, '_')
-                       .replace(/[^\w\-_.]/g, '_')
-                       .replace(/_+/g, '_');
+            .replace(/[^\w\-_.]/g, '_')
+            .replace(/_+/g, '_');
         }
 
         // Anonymous files never get a timestamp
@@ -745,6 +874,10 @@ router.post('/upload/complete', async (req, res) => {
 
         // Register in file registry
         const fileId = generateFileId();
+        const textReaderLink = maybeCreateTextReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt);
+        const textReaderStyledLink = textReaderLink
+            ? `[${manifest.filename} - TomasekValla Filestream System Reader](${textReaderLink})`
+            : null;
         registry.files.push({
             id: fileId,
             originalName: manifest.filename,
@@ -754,9 +887,10 @@ router.post('/upload/complete', async (req, res) => {
             size: finalStats.size,
             mimeType: manifest.mimeType,
             category: getFileType(manifest.mimeType),
-            uploadedAt: Date.now(),
-            expiresAt: expiresAt,
-            batchId: batchId || manifest.batchId || null
+                            uploadedAt: Date.now(),
+                            expiresAt: expiresAt,
+                            batchId: batchId || manifest.batchId || null,
+                            textReaderLink: textReaderLink || null
         });
 
         // If part of a batch, add fileId to batch entry
@@ -776,10 +910,12 @@ router.post('/upload/complete', async (req, res) => {
             message: 'Upload successful',
             link,
             styledLink: `[${manifest.filename} - TomasekValla Filestream System](${link})`,
-            type: getFileType(manifest.mimeType),
-            filename: finalFilename,
-            size: finalStats.size,
-            fileId
+                 type: getFileType(manifest.mimeType),
+                 filename: finalFilename,
+                 size: finalStats.size,
+                 fileId,
+                 textReaderLink: textReaderLink || null,
+                 textReaderStyledLink: textReaderStyledLink || null
         });
 
     } catch (error) {
@@ -832,9 +968,9 @@ router.post('/upload/batch/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyP
     registry.batches.push({
         id: batchId,
         createdAt: Date.now(),
-        expiresAt: expiresAt,
-        files: [],
-        landingPage: null
+                          expiresAt: expiresAt,
+                          files: [],
+                          landingPage: null
     });
 
     saveRegistry();
@@ -876,10 +1012,10 @@ router.post('/upload/batch/complete', async (req, res) => {
         const size = formatBytes(f.size);
         const safeName = escapeHtml(f.originalName);
         return `        <div class="file-row">
-            <a href="${escapeHtml(url)}" target="_blank" class="file-name" title="${safeName}">${safeName}</a>
-            <span class="file-size">${escapeHtml(size)}</span>
-            <button class="file-copy" data-idx="${idx}" data-kind="link" title="Copy link">📄</button>
-            <button class="file-copy" data-idx="${idx}" data-kind="styled" title="Copy styled">✨</button>
+        <a href="${escapeHtml(url)}" target="_blank" class="file-name" title="${safeName}">${safeName}</a>
+        <span class="file-size">${escapeHtml(size)}</span>
+        <button class="file-copy" data-idx="${idx}" data-kind="link" title="Copy link">📄</button>
+        <button class="file-copy" data-idx="${idx}" data-kind="styled" title="Copy styled">✨</button>
         </div>`;
     }).join('\n');
 
@@ -900,110 +1036,110 @@ router.post('/upload/batch/complete', async (req, res) => {
     const batchStyledLink = `[${batchFiles.length} Files (${totalSize}) - TomasekValla Filestream System](${landingPageUrl})`;
 
     const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
+    <html lang="en">
+    <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TVFS Shared Files</title>
     <link rel="icon" type="image/x-icon" href="/icon.png">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap');
-        * { margin:0; padding:0; box-sizing:border-box; font-family:'Inter',sans-serif; }
-        body { background:#0f0c19; color:#fff; min-height:100vh; display:flex; justify-content:center; padding:40px 20px; }
-        .container { max-width:600px; width:100%; }
-        h1 { font-size:1.4rem; font-weight:800; margin-bottom:8px; }
-        h1 span { background:linear-gradient(135deg,#6c5ce7,#00b894); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-        .subtitle { color:#8b8b9e; font-size:0.8rem; margin-bottom:24px; }
-        .file-list { display:flex; flex-direction:column; gap:8px; margin-bottom:24px; }
-        .file-row { display:flex; align-items:center; gap:8px; padding:12px 16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); border-radius:12px; }
-        .file-name { flex:1; min-width:0; color:#55efc4; text-decoration:none; font-weight:600; font-size:0.9rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .file-name:hover { text-decoration:underline; }
-        .file-size { color:#8b8b9e; font-size:0.8rem; white-space:nowrap; }
-        .file-copy { background:none; border:none; cursor:pointer; font-size:0.95rem; padding:4px 6px; border-radius:6px; flex-shrink:0; }
-        .file-copy:hover { background:rgba(255,255,255,0.08); }
-        .actions { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
-        .btn { padding:14px 24px; border-radius:12px; border:none; font-weight:700; font-size:0.9rem; cursor:pointer; }
-        .btn-primary { background:linear-gradient(135deg,#6c5ce7,#00b894); color:#fff; }
-        .btn-secondary { background:rgba(255,255,255,0.06); color:#a29bfe; border:1px solid rgba(255,255,255,0.1); }
-        .btn:hover { transform:translateY(-1px); }
-        .expire-note { color:#8b8b9e; font-size:0.7rem; margin-top:20px; text-align:center; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap');
+    * { margin:0; padding:0; box-sizing:border-box; font-family:'Inter',sans-serif; }
+    body { background:#0f0c19; color:#fff; min-height:100vh; display:flex; justify-content:center; padding:40px 20px; }
+    .container { max-width:600px; width:100%; }
+    h1 { font-size:1.4rem; font-weight:800; margin-bottom:8px; }
+    h1 span { background:linear-gradient(135deg,#6c5ce7,#00b894); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .subtitle { color:#8b8b9e; font-size:0.8rem; margin-bottom:24px; }
+    .file-list { display:flex; flex-direction:column; gap:8px; margin-bottom:24px; }
+    .file-row { display:flex; align-items:center; gap:8px; padding:12px 16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); border-radius:12px; }
+    .file-name { flex:1; min-width:0; color:#55efc4; text-decoration:none; font-weight:600; font-size:0.9rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .file-name:hover { text-decoration:underline; }
+    .file-size { color:#8b8b9e; font-size:0.8rem; white-space:nowrap; }
+    .file-copy { background:none; border:none; cursor:pointer; font-size:0.95rem; padding:4px 6px; border-radius:6px; flex-shrink:0; }
+    .file-copy:hover { background:rgba(255,255,255,0.08); }
+    .actions { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+    .btn { padding:14px 24px; border-radius:12px; border:none; font-weight:700; font-size:0.9rem; cursor:pointer; }
+    .btn-primary { background:linear-gradient(135deg,#6c5ce7,#00b894); color:#fff; }
+    .btn-secondary { background:rgba(255,255,255,0.06); color:#a29bfe; border:1px solid rgba(255,255,255,0.1); }
+    .btn:hover { transform:translateY(-1px); }
+    .expire-note { color:#8b8b9e; font-size:0.7rem; margin-top:20px; text-align:center; }
     </style>
-</head>
-<body>
-<div class="container">
+    </head>
+    <body>
+    <div class="container">
     <h1><span>TomasekValla</span> Shared Files</h1>
     <p class="subtitle">${escapeHtml(String(batchFiles.length))} files \u2022 ${escapeHtml(totalSize)}</p>
     <div class="actions">
-        <button class="btn btn-secondary" id="copyPageLink">📄 Copy Link</button>
-        <button class="btn btn-secondary" id="copyPageStyled">✨ Copy Styled</button>
+    <button class="btn btn-secondary" id="copyPageLink">📄 Copy Link</button>
+    <button class="btn btn-secondary" id="copyPageStyled">✨ Copy Styled</button>
     </div>
     <div class="file-list">
-${fileRows}
+    ${fileRows}
     </div>
     <div class="actions">
-        <button class="btn btn-primary" onclick="downloadAll()">\u2B07\uFE0F Download All</button>
-        <button class="btn btn-secondary" onclick="requestZip(this)">📦 Download ZIP</button>
+    <button class="btn btn-primary" onclick="downloadAll()">\u2B07\uFE0F Download All</button>
+    <button class="btn btn-secondary" onclick="requestZip(this)">📦 Download ZIP</button>
     </div>
     <p class="expire-note">These files expire on ${escapeHtml(expiryDate)}</p>
-</div>
-<script>
-const files = ${safeScriptJson(filesData)};
-const pageLink = ${safeScriptJson(landingPageUrl)};
-const pageStyled = ${safeScriptJson(batchStyledLink)};
-const batchId = ${safeScriptJson(batchId)};
+    </div>
+    <script>
+    const files = ${safeScriptJson(filesData)};
+    const pageLink = ${safeScriptJson(landingPageUrl)};
+    const pageStyled = ${safeScriptJson(batchStyledLink)};
+    const batchId = ${safeScriptJson(batchId)};
 
-function truncateFilename(name, maxLen) {
-    maxLen = maxLen || 32;
-    if (name.length <= maxLen) return name;
-    const dot = name.lastIndexOf('.');
-    const ext = (dot > 0 && name.length - dot <= 6) ? name.slice(dot) : '';
-    const base = ext ? name.slice(0, dot) : name;
-    const keep = Math.max(maxLen - ext.length - 3, 3);
-    return base.slice(0, keep) + '...' + ext;
-}
+    function truncateFilename(name, maxLen) {
+        maxLen = maxLen || 32;
+        if (name.length <= maxLen) return name;
+        const dot = name.lastIndexOf('.');
+        const ext = (dot > 0 && name.length - dot <= 6) ? name.slice(dot) : '';
+        const base = ext ? name.slice(0, dot) : name;
+        const keep = Math.max(maxLen - ext.length - 3, 3);
+        return base.slice(0, keep) + '...' + ext;
+    }
 
-function copyText(btn, text) {
-    navigator.clipboard.writeText(text).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = '\u2705';
-        setTimeout(() => { btn.textContent = orig; }, 1200);
+    function copyText(btn, text) {
+        navigator.clipboard.writeText(text).then(() => {
+            const orig = btn.textContent;
+            btn.textContent = '\u2705';
+            setTimeout(() => { btn.textContent = orig; }, 1200);
+        });
+    }
+
+    document.querySelectorAll('.file-name').forEach((el, idx) => {
+        el.textContent = truncateFilename(files[idx].name, 32);
     });
-}
 
-document.querySelectorAll('.file-name').forEach((el, idx) => {
-    el.textContent = truncateFilename(files[idx].name, 32);
-});
-
-document.querySelectorAll('.file-copy').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const idx = parseInt(btn.dataset.idx, 10);
-        const f = files[idx];
-        copyText(btn, btn.dataset.kind === 'styled' ? f.styled : f.url);
+    document.querySelectorAll('.file-copy').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = parseInt(btn.dataset.idx, 10);
+            const f = files[idx];
+            copyText(btn, btn.dataset.kind === 'styled' ? f.styled : f.url);
+        });
     });
-});
 
-document.getElementById('copyPageLink').addEventListener('click', function() { copyText(this, pageLink); });
-document.getElementById('copyPageStyled').addEventListener('click', function() { copyText(this, pageStyled); });
+    document.getElementById('copyPageLink').addEventListener('click', function() { copyText(this, pageLink); });
+    document.getElementById('copyPageStyled').addEventListener('click', function() { copyText(this, pageStyled); });
 
-function downloadAll() {
-    files.forEach((f, i) => {
-        setTimeout(() => {
-            const a = document.createElement('a');
-            a.href = f.url;
-            a.download = f.name;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        }, i * 800);
-    });
-}
+    function downloadAll() {
+        files.forEach((f, i) => {
+            setTimeout(() => {
+                const a = document.createElement('a');
+                a.href = f.url;
+                a.download = f.name;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }, i * 800);
+        });
+    }
 
-function requestZip(btn) {
-    btn.textContent = '\u23F3 Creating ZIP...';
-    btn.disabled = true;
-    fetch('/api/batch/' + batchId + '/zip', { method: 'POST' })
+    function requestZip(btn) {
+        btn.textContent = '\u23F3 Creating ZIP...';
+        btn.disabled = true;
+        fetch('/api/batch/' + batchId + '/zip', { method: 'POST' })
         .then(r => r.json())
         .then(d => {
             if (d.link) { window.location.href = d.link; btn.textContent = '\u2705 ZIP Ready'; }
@@ -1011,10 +1147,10 @@ function requestZip(btn) {
             setTimeout(() => { btn.textContent = '\uD83D\uDCE6 Download ZIP'; btn.disabled = false; }, 3000);
         })
         .catch(() => { btn.textContent = '\u274C Failed'; setTimeout(() => { btn.textContent = '\uD83D\uDCE6 Download ZIP'; btn.disabled = false; }, 3000); });
-}
-</script>
-</body>
-</html>`;
+    }
+    </script>
+    </body>
+    </html>`;
 
     // Write the landing page
     const landingPagePath = path.join(dirs.batch, `${batchId}.html`);
@@ -1039,7 +1175,8 @@ function requestZip(btn) {
                 storedName: f.storedName,
                 link,
                 styledLink: `[${f.originalName} - TomasekValla Filestream System](${link})`,
-                size: f.size
+                              size: f.size,
+                              textReaderLink: f.textReaderLink || null
             };
         })
     });
@@ -1098,8 +1235,8 @@ router.post('/batch/:id/zip', async (req, res) => {
             mimeType: 'application/zip',
             category: 'file',
             uploadedAt: Date.now(),
-            expiresAt: batchEntry.expiresAt,
-            batchId: batchId
+                            expiresAt: batchEntry.expiresAt,
+                            batchId: batchId
         });
         saveRegistry();
 
@@ -1145,8 +1282,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         finalFilename = `${randomName}${ext}`;
     } else {
         baseName = baseName.replace(/\s+/g, '_')
-                            .replace(/[^\w\-_.]/g, '_')
-                            .replace(/_+/g, '_');
+        .replace(/[^\w\-_.]/g, '_')
+        .replace(/_+/g, '_');
         const wantsNoTimestamp = (req.body.removeTimestamp === 'true' || req.body.removeTimestamp === true) && auth.tier === 2;
         finalFilename = wantsNoTimestamp ? `${baseName}${ext}` : `${baseName}_${timestamp}${ext}`;
     }
@@ -1181,6 +1318,11 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const fileId = generateFileId();
     const fileStats = fs.statSync(req.file.path);
 
+    const textReaderLink = maybeCreateTextReader(filename, originalName, mimetype, expiresAt);
+    const textReaderStyledLink = textReaderLink
+        ? `[${originalName} - TomasekValla Filestream System Reader](${textReaderLink})`
+        : null;
+
     registry.files.push({
         id: fileId,
         originalName: originalName,
@@ -1191,8 +1333,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         mimeType: mimetype,
         category: fileType,
         uploadedAt: Date.now(),
-        expiresAt: expiresAt,
-        batchId: req.body.batchId || null
+                        expiresAt: expiresAt,
+                        batchId: req.body.batchId || null,
+                        textReaderLink: textReaderLink || null
     });
 
     if (req.body.batchId) {
@@ -1211,7 +1354,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         type: fileType,
         filename,
         size: fileStats.size,
-        fileId
+        fileId,
+        textReaderLink: textReaderLink || null,
+        textReaderStyledLink: textReaderStyledLink || null
     });
 });
 
