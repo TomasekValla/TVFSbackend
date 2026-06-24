@@ -9,6 +9,8 @@ const speedtestRoutes = require('./speedtest');
 
 const app = express();
 
+app.set('trust proxy', 1);  // <-- taky přidej tady
+
 app.use(cors({
     origin: ['https://tomasekvalla.cz', 'https://www.tomasekvalla.cz', 'https://files.tomasekvalla.cz'],
     credentials: true
@@ -16,6 +18,9 @@ app.use(cors({
 app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.post('/share-target', (req, res) => res.redirect(303, '/upload.html?share=1'));
+app.get('/share-target', (req, res) => res.redirect(302, '/upload.html'));
 
 app.use('/api', uploadRoutes);
 app.use('/api/spotify', spotifyRoutes);

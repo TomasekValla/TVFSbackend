@@ -241,6 +241,7 @@ function getDestDir(mimeType) {
     if (type === 'image' && isBrowserFriendly(mimeType, 'image')) return dirs.pictures;
     if (type === 'video' && isBrowserFriendly(mimeType, 'video')) return dirs.videos;
     if (type === 'audio' && isBrowserFriendly(mimeType, 'audio')) return dirs.audio;
+    if (mimeType === 'text/markdown') return dirs.text;
     return dirs.download;
 }
 
@@ -364,8 +365,8 @@ function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt
     const isTxt = mimeType === 'text/plain' || storedFilename.toLowerCase().endsWith('.txt');
     if (!isTxt) return null;
 
-    const readerId = generateReaderId();
-    const readerFilename = `${readerId}.html`;
+    const readerSlug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || generateReaderId();
+    const readerFilename = `${readerSlug}_txt_tvfsreader.html`;
     const readerPath = path.join(dirs.text, readerFilename);
     const txtUrl = `https://files.tomasekvalla.cz/files/download/${storedFilename}`;
     const readerUrl = `https://files.tomasekvalla.cz/files/text/${readerFilename}`;
@@ -397,6 +398,134 @@ function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt
         return null;
     }
 }
+
+// ─── MD Reader ────────────────────────────────────────────────────────────────
+
+function generateMdReaderHtml(mdUrl, originalName) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<title>${escapeHtml(originalName)} — TVFS MD Reader</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+:root { --bg:#111; --fg:#e8e8e8; --accent:#2fffc4; --accent2:#7c4dff; --fs:1rem; --border:rgba(255,255,255,.1); }
+html, body { max-width:100%; overflow-x:hidden; }
+body { background:var(--bg); color:var(--fg); margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; transition:background .2s,color .2s; min-height:100vh; display:flex; flex-direction:column; }
+.toolbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:10px; padding:12px 20px; background:rgba(17,17,17,.92); backdrop-filter:blur(12px); border-bottom:1px solid var(--border); flex-wrap:wrap; }
+.tb-title { flex:1; min-width:0; font-size:.8rem; font-weight:700; color:var(--accent); letter-spacing:.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:monospace; }
+.tb-btn { background:rgba(255,255,255,.06); border:1px solid var(--border); color:var(--fg); font-size:.72rem; font-weight:700; padding:6px 13px; border-radius:8px; cursor:pointer; white-space:nowrap; transition:all .15s; text-decoration:none; display:inline-flex; align-items:center; }
+.tb-btn:hover { background:rgba(47,255,196,.12); border-color:var(--accent); color:var(--accent); }
+.content { flex:1; padding:40px 24px; max-width:860px; margin:0 auto; width:100%; }
+.loading { text-align:center; padding:80px 20px; color:rgba(255,255,255,.3); font-size:.9rem; }
+.error   { text-align:center; padding:80px 20px; color:#ff6b6b; font-size:.9rem; }
+.md-body { font-size:var(--fs); line-height:1.75; color:var(--fg); word-break:break-word; }
+.md-body h1,.md-body h2,.md-body h3,.md-body h4,.md-body h5,.md-body h6 { font-weight:700; line-height:1.25; margin:1.6em 0 .6em; background:linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.md-body h1 { font-size:2em; border-bottom:1px solid var(--border); padding-bottom:.3em; }
+.md-body h2 { font-size:1.5em; border-bottom:1px solid var(--border); padding-bottom:.2em; }
+.md-body h3 { font-size:1.25em; }
+.md-body h4 { font-size:1.05em; }
+.md-body p  { margin:.8em 0; }
+.md-body a  { color:var(--accent); text-decoration:none; }
+.md-body a:hover { text-decoration:underline; }
+.md-body strong { font-weight:700; color:#fff; }
+.md-body em     { font-style:italic; opacity:.85; }
+.md-body code { font-family:'JetBrains Mono','Courier New',monospace; background:rgba(255,255,255,.08); border:1px solid var(--border); border-radius:5px; padding:2px 6px; font-size:.88em; }
+.md-body pre  { background:rgba(0,0,0,.4); border:1px solid var(--border); border-radius:10px; padding:18px 20px; overflow-x:auto; margin:1em 0; }
+.md-body pre code { background:none; border:none; padding:0; font-size:.9em; }
+.md-body blockquote { border-left:3px solid var(--accent2); margin:1em 0; padding:.4em 1em; background:rgba(124,77,255,.08); border-radius:0 8px 8px 0; color:var(--fg); opacity:.85; }
+.md-body ul,.md-body ol { padding-left:1.6em; margin:.6em 0; }
+.md-body li { margin:.3em 0; }
+.md-body hr { border:none; border-top:1px solid var(--border); margin:1.8em 0; }
+.md-body img { max-width:100%; border-radius:8px; margin:.5em 0; }
+.md-body table { width:100%; border-collapse:collapse; margin:1em 0; font-size:.92em; overflow-x:auto; display:block; }
+.md-body thead tr { background:rgba(47,255,196,.08); }
+.md-body th,.md-body td { border:1px solid var(--border); padding:8px 14px; text-align:left; }
+.md-body th { font-weight:700; color:var(--accent); }
+.md-body tbody tr:nth-child(even) { background:rgba(255,255,255,.03); }
+body.light { --bg:#fafafa; --fg:#1a1a1a; --border:rgba(0,0,0,.1); }
+body.light .toolbar { background:rgba(250,250,250,.92); }
+body.light .tb-btn  { background:rgba(0,0,0,.05); border-color:rgba(0,0,0,.12); color:var(--fg); }
+body.light .tb-btn:hover { background:rgba(0,168,134,.1); border-color:#00a886; color:#00a886; }
+body.light .md-body code { background:rgba(0,0,0,.06); }
+body.light .md-body pre  { background:rgba(0,0,0,.04); }
+body.light .md-body strong { color:#000; }
+body.light .md-body blockquote { background:rgba(124,77,255,.06); color:#1a1a1a; opacity:1; }
+@media (max-width:600px) { .toolbar { padding:10px 14px; } .content { padding:24px 16px; } }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <span class="tb-title">${escapeHtml(originalName)}</span>
+  <button class="tb-btn" id="themeBtn" onclick="toggleTheme()">&#9728;&#65039; Light</button>
+  <button class="tb-btn" id="sizeBtn" onclick="cycleSize()">Aa</button>
+  <a class="tb-btn" href="${escapeHtml(mdUrl)}" download="${escapeHtml(originalName)}">&#11015; Download .md</a>
+</div>
+<div class="content"><div id="mdContent" class="md-body loading">Loading&#8230;</div></div>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"><\/script>
+<script>
+var SIZES=['0.85rem','1rem','1.15rem','1.35rem','1.6rem'];
+var sizeIdx=parseInt(localStorage.getItem('tvfs_reader_size')||'1');
+var theme=localStorage.getItem('tvfs_reader_theme')||'dark';
+function applyTheme(){document.body.classList.toggle('light',theme==='light');document.getElementById('themeBtn').textContent=theme==='light'?'\uD83C\uDF19 Dark':'\u2600\uFE0F Light';document.querySelector('meta[name="theme-color"]').setAttribute('content',theme==='light'?'#fafafa':'#111111');}
+function toggleTheme(){theme=theme==='light'?'dark':'light';localStorage.setItem('tvfs_reader_theme',theme);applyTheme();}
+function applySize(){document.documentElement.style.setProperty('--fs',SIZES[sizeIdx]);document.getElementById('sizeBtn').textContent='Aa ('+SIZES[sizeIdx]+')';}
+function cycleSize(){sizeIdx=(sizeIdx+1)%SIZES.length;localStorage.setItem('tvfs_reader_size',sizeIdx);applySize();}
+applyTheme();applySize();
+fetch(${safeScriptJson(mdUrl)})
+.then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
+.then(function(t){
+  var el=document.getElementById('mdContent');
+  el.classList.remove('loading');
+  function render(){
+    if(typeof marked!=='undefined'){marked.setOptions({breaks:true,gfm:true});el.innerHTML=marked.parse(t);}
+    else setTimeout(render,50);
+  }
+  render();
+})
+.catch(function(e){var el=document.getElementById('mdContent');el.className='error';el.textContent='Failed to load: '+e.message;});
+<\/script>
+</body>
+</html>`;
+}
+
+function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt) {
+    const isMd = mimeType === 'text/markdown' || storedFilename.toLowerCase().endsWith('.md');
+    if (!isMd) return null;
+
+    const mdUrl = `https://files.tomasekvalla.cz/files/text/${storedFilename}`;
+    try {
+        const readerSlug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || generateReaderId();
+        const readerFilename = `${readerSlug}_md_tvfsreader.html`;
+        const readerPath = path.join(dirs.text, readerFilename);
+        const readerUrl = `https://files.tomasekvalla.cz/files/text/${readerFilename}`;
+        const html = generateMdReaderHtml(mdUrl, originalName);
+        fs.writeFileSync(readerPath, html);
+        console.log(`📖 [MD READER] Created ${readerFilename} for ${storedFilename}`);
+        const mdReadFileId = generateFileId();
+        registry.files.push({
+            id: mdReadFileId,
+            originalName: readerFilename,
+            storedName: readerFilename,
+            path: readerPath,
+            directory: 'text',
+            size: Buffer.byteLength(html),
+            mimeType: 'text/html',
+            category: 'file',
+            uploadedAt: Date.now(),
+            expiresAt: expiresAt,
+            isMdReader: true
+        });
+        saveRegistry();
+        return readerUrl;
+    } catch (e) {
+        console.error('\u274c [MD READER] Failed to create reader:', e.message);
+        return null;
+    }
+}
+
 
 const storage = multer.diskStorage({
     destination: function(req, file, cb) {
@@ -878,6 +1007,8 @@ router.post('/upload/complete', async (req, res) => {
         const textReaderStyledLink = textReaderLink
             ? `[${manifest.filename} - TomasekValla Filestream System Reader](${textReaderLink})`
             : null;
+        const mdReaderLink = maybeCreateMdReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt);
+        const mdReaderStyledLink = mdReaderLink ? `[${manifest.filename} - TVFS MD Reader](${mdReaderLink})` : null;
         registry.files.push({
             id: fileId,
             originalName: manifest.filename,
@@ -890,7 +1021,8 @@ router.post('/upload/complete', async (req, res) => {
                             uploadedAt: Date.now(),
                             expiresAt: expiresAt,
                             batchId: batchId || manifest.batchId || null,
-                            textReaderLink: textReaderLink || null
+                            textReaderLink: textReaderLink || null,
+                            mdReaderLink: mdReaderLink || null
         });
 
         // If part of a batch, add fileId to batch entry
@@ -915,7 +1047,9 @@ router.post('/upload/complete', async (req, res) => {
                  size: finalStats.size,
                  fileId,
                  textReaderLink: textReaderLink || null,
-                 textReaderStyledLink: textReaderStyledLink || null
+                 textReaderStyledLink: textReaderStyledLink || null,
+                 mdReaderLink: mdReaderLink || null,
+                 mdReaderStyledLink: mdReaderStyledLink || null
         });
 
     } catch (error) {
@@ -1322,6 +1456,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const textReaderStyledLink = textReaderLink
         ? `[${originalName} - TomasekValla Filestream System Reader](${textReaderLink})`
         : null;
+    const mdReaderLink = maybeCreateMdReader(filename, originalName, mimetype, expiresAt);
+    const mdReaderStyledLink = mdReaderLink ? `[${originalName} - TVFS MD Reader](${mdReaderLink})` : null;
 
     registry.files.push({
         id: fileId,
@@ -1335,7 +1471,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         uploadedAt: Date.now(),
                         expiresAt: expiresAt,
                         batchId: req.body.batchId || null,
-                        textReaderLink: textReaderLink || null
+                        textReaderLink: textReaderLink || null,
+                        mdReaderLink: mdReaderLink || null
     });
 
     if (req.body.batchId) {
@@ -1356,7 +1493,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         size: fileStats.size,
         fileId,
         textReaderLink: textReaderLink || null,
-        textReaderStyledLink: textReaderStyledLink || null
+        textReaderStyledLink: textReaderStyledLink || null,
+        mdReaderLink: mdReaderLink || null,
+        mdReaderStyledLink: mdReaderStyledLink || null
     });
 });
 
