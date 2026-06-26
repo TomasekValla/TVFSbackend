@@ -652,6 +652,7 @@ router.get('/status', (req, res) => {
         usedBytes,
         usedGB: `${usedGB} GB`,
         totalGB: 32
+        tier: auth.tier
     });
 });
 
